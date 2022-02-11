@@ -53,6 +53,17 @@ class Ip(Tool):
             ),
         )
 
+    def addr_add(self, nic_name: str, ip: str) -> None:
+        self.run(
+            f"addr add {ip}/24 dev {nic_name}",
+            shell=True,
+            sudo=True,
+            expected_exit_code=0,
+            expected_exit_code_failure_message=(
+                f"Could not add address to device {nic_name}"
+            ),
+        )
+
     def restart_device(self, nic_name: str) -> None:
         self.node.execute(
             f"ip link set dev {nic_name} down;ip link set dev {nic_name} up",
