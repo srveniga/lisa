@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import random
 from typing import Any, List, Optional
 
 from assertpy.assertpy import assert_that
@@ -8,6 +9,14 @@ from assertpy.assertpy import assert_that
 from lisa.executable import Tool
 from lisa.operating_system import Fedora, Posix
 from lisa.tools import Kill, Lsmod
+
+
+def generate_random_mac_address() -> str:
+    return "02:00:00:%02x:%02x:%02x" % (
+        random.randint(0, 255),
+        random.randint(0, 255),
+        random.randint(0, 255),
+    )
 
 
 class Qemu(Tool):
@@ -25,6 +34,11 @@ class Qemu(Tool):
         self,
         port: int,
         guest_image_path: str,
+        cores: int = 2,
+        memory: int = 2048,
+        nics: int = 1,
+        nic_model: str = "e1000",
+        taps: Optional[List[str]] = None,
         disks: Optional[List[str]] = None,
         stop_existing_vm: bool = True,
     ) -> None:
@@ -36,17 +50,26 @@ class Qemu(Tool):
         # -m: memory size
         # -smp: SMP system with `n` CPUs
         # -hda : guest image path
-        # -device: add a device to the VM
-        # -netdev: Configure user mode network backend and setup port forwarding
-        # -enable-kvm: enable kvm
-        # -display: enable or disable display
-        # -demonize: run in background
-        cmd = (
-            f"-smp 2 -m 2048 -hda {guest_image_path} "
-            "-device e1000,netdev=user.0 "
-            f"-netdev user,id=user.0,hostfwd=tcp::{port}-:22 "
-            "-enable-kvm -display none -daemonize "
-        )
+        cmd = f"-smp {cores} -m {memory} -hda {guest_image_path} "
+
+        # add devices
+        for i in range(nics):
+            random_mac_address = generate_random_mac_address()
+            cmd += f"-device {nic_model},netdev=net{i},mac={random_mac_address} "
+            cmd += f"-netdev user,id=net{i},hostfwd=tcp::{port}-:22 "
+
+        # add tap devices
+        if taps:
+            for tap in taps:
+                random_mac_address = generate_random_mac_address()
+                cmd += (
+                    f"-device {nic_model},netdev=nettap{i},"
+                    f"mac={random_mac_address},mq=on,vectors=10 "
+                )
+                cmd += (
+                    f"-netdev tap,id=nettap{i},"
+                    f"ifname={tap},script=no,vhost=on,queues=4 "
+                )
 
         # add disks
         if disks:
@@ -56,6 +79,11 @@ class Qemu(Tool):
                     f"file=/dev/{disk},cache=none,if=none,format=raw,aio=threads "
                     f"-device virtio-scsi-pci -device scsi-hd,drive=datadisk-{disk} "
                 )
+
+        # -enable-kvm: enable kvm
+        # -display: enable or disable display
+        # -demonize: run in background
+        cmd += "-enable-kvm -display none -daemonize "
 
         # kill any existing qemu process if stop_existing_vm is True
         if stop_existing_vm:
