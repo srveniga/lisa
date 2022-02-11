@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from lisa import RemoteNode
@@ -23,8 +24,12 @@ def connect_nested_vm(
     guest_password: str,
     guest_port: int,
     guest_image_url: str,
+    name: str = "L2-VM",
     image_name: str = NESTED_VM_IMAGE_NAME,
     image_size: int = NESTED_VM_REQUIRED_DISK_SIZE_IN_GB,
+    nics: int = 1,
+    nic_model: str = "e1000",
+    taps: Optional[List[str]] = None,
     disks: Optional[List[str]] = None,
     stop_existing_vm: bool = True,
 ) -> RemoteNode:
@@ -58,12 +63,18 @@ def connect_nested_vm(
     host.tools[Qemu].create_vm(
         guest_port,
         f"{image_folder_path}/{image_name}",
-        disks,
+        nics=nics,
+        nic_model=nic_model,
+        taps=taps,
+        disks=disks,
         stop_existing_vm=stop_existing_vm,
     )
 
+    # allow time for VM to boot up
+    time.sleep(90)
+
     # setup connection to nested vm
-    nested_vm = RemoteNode(Node(name="L2-vm"), 0, "L2-vm")
+    nested_vm = RemoteNode(Node(name=name), 0, name)
     nested_vm.set_connection_info(
         public_address=host.public_address,
         username=guest_username,

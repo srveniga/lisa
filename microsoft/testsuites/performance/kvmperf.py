@@ -3,12 +3,13 @@
 
 import inspect
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from lisa import (
     TestCaseMetadata,
     TestSuite,
     TestSuiteMetadata,
+    notifier,
     schema,
     search_space,
     simple_requirement,
@@ -17,7 +18,8 @@ from lisa.environment import Environment
 from lisa.features import Disk
 from lisa.messages import DiskSetupType, DiskType
 from lisa.node import RemoteNode
-from lisa.tools import Lscpu
+from lisa.tools import Ip, Lagscope, Lscpu, Ntttcp
+from lisa.tools.ntttcp import NTTTCP_TCP_CONCURRENCY
 from microsoft.testsuites.nested.common import (
     connect_nested_vm,
     parse_nested_image_variables,
@@ -39,6 +41,18 @@ from microsoft.testsuites.performance.common import (
 )
 class KVMPerformance(TestSuite):  # noqa
     TIME_OUT = 12000
+
+    CLIENT_IMAGE = "nestedclient.qcow2"
+    SERVER_IMAGE = "nestedserver.qcow2"
+    CLIENT_HOST_FWD_PORT = 60022
+    SERVER_HOST_FWD_PORT = 60023
+    BR_NAME = "br0"
+    BR_ADDR = "192.168.1.10"
+    CLIENT_IP_ADDR = "192.168.1.14"
+    SERVER_IP_ADDR = "192.168.1.15"
+    CLIENT_TAP = "tap1"
+    SERVER_TAP = "tap2"
+    NIC_NAME = "ens4"
 
     @TestCaseMetadata(
         description="""
@@ -79,6 +93,144 @@ class KVMPerformance(TestSuite):  # noqa
         self, node: RemoteNode, environment: Environment, variables: Dict[str, Any]
     ) -> None:
         self._storage_perf_qemu(node, environment, variables)
+
+    @TestCaseMetadata(
+        description="""
+        This test case runs ntttcp test on two nested VMs on same L1 guest
+        connected with private bridge
+        """,
+        priority=3,
+        timeout=TIME_OUT,
+    )
+    def perf_nested_kvm_ntttcp_private_bridge(
+        self, node: RemoteNode, environment: Environment, variables: Dict[str, Any]
+    ) -> None:
+        self._ntttcp_perf_qemu(node, environment, variables)
+
+    def _ntttcp_perf_qemu(
+        self,
+        node: RemoteNode,
+        environment: Environment,
+        variables: Dict[str, Any],
+    ) -> None:
+        (
+            nested_image_username,
+            nested_image_password,
+            _,
+            nested_image_url,
+        ) = parse_nested_image_variables(variables)
+
+        # setup bridge and taps
+        node.tools[Ip].setup_bridge(self.BR_NAME, self.BR_ADDR)
+        node.tools[Ip].setup_tap(self.CLIENT_TAP, self.BR_NAME)
+        node.tools[Ip].setup_tap(self.SERVER_TAP, self.BR_NAME)
+
+        # setup client and server
+        client = connect_nested_vm(
+            node,
+            nested_image_username,
+            nested_image_password,
+            self.CLIENT_HOST_FWD_PORT,
+            nested_image_url,
+            image_name=self.CLIENT_IMAGE,
+            nic_model="virtio-net-pci",
+            taps=[self.CLIENT_TAP],
+            name="client",
+        )
+        client.tools[Ip].addr_add(self.NIC_NAME, self.CLIENT_IP_ADDR)
+        client.tools[Ip].up(self.NIC_NAME)
+
+        server = connect_nested_vm(
+            node,
+            nested_image_username,
+            nested_image_password,
+            self.SERVER_HOST_FWD_PORT,
+            nested_image_url,
+            image_name=self.SERVER_IMAGE,
+            stop_existing_vm=False,
+            nic_model="virtio-net-pci",
+            taps=[self.SERVER_TAP],
+            name="server",
+        )
+        server.tools[Ip].addr_add(self.NIC_NAME, self.SERVER_IP_ADDR)
+        server.tools[Ip].up(self.NIC_NAME)
+
+        # run ntttcp test
+        client_ntttcp = client.tools[Ntttcp]
+        server_ntttcp = server.tools[Ntttcp]
+        client_lagscope = client.tools[Lagscope]
+        server_lagscope = server.tools[Lagscope]
+        for ntttcp in [client_ntttcp, server_ntttcp]:
+            ntttcp.set_sys_variables(udp_mode=False)
+            ntttcp.set_tasks_max()
+        server_nic_name = self.NIC_NAME
+        client_nic_name = self.NIC_NAME
+
+        server_lagscope.run_as_server(ip=self.SERVER_IP_ADDR)
+        max_server_threads = 64
+        perf_ntttcp_message_list: List[Any] = []
+        for test_thread in NTTTCP_TCP_CONCURRENCY:
+            if test_thread < max_server_threads:
+                num_threads_p = test_thread
+                num_threads_n = 1
+            else:
+                num_threads_p = max_server_threads
+                num_threads_n = int(test_thread / num_threads_p)
+            if 1 == num_threads_n and 1 == num_threads_p:
+                buffer_size = int(1048576 / 1024)
+            else:
+                buffer_size = int(65536 / 1024)
+            server_result = server_ntttcp.run_as_server_async(
+                server_nic_name,
+                ports_count=num_threads_p,
+                buffer_size=buffer_size,
+                dev_differentiator="Hypervisor callback interrupts",
+                udp_mode=False,
+            )
+            client_lagscope_process = client_lagscope.run_as_client_async(
+                server_ip=self.SERVER_IP_ADDR,
+                ping_count=0,
+                run_time_seconds=10,
+                print_histogram=False,
+                print_percentile=False,
+                histogram_1st_interval_start_value=0,
+                length_of_histogram_intervals=0,
+                count_of_histogram_intervals=0,
+                dump_csv=False,
+            )
+            client_ntttcp_result = client_ntttcp.run_as_client(
+                client_nic_name,
+                self.SERVER_IP_ADDR,
+                buffer_size=buffer_size,
+                threads_count=num_threads_n,
+                ports_count=num_threads_p,
+                dev_differentiator="Hypervisor callback interrupts",
+                udp_mode=False,
+            )
+            server_ntttcp_result = server_result.wait_result()
+            server_result_temp = server_ntttcp.create_ntttcp_result(
+                server_ntttcp_result
+            )
+            client_result_temp = client_ntttcp.create_ntttcp_result(
+                client_ntttcp_result, role="client"
+            )
+            client_sar_result = client_lagscope_process.wait_result()
+            client_average_latency = client_lagscope.get_average(client_sar_result)
+
+            perf_ntttcp_message_list.append(
+                client_ntttcp.create_ntttcp_tcp_performance_message(
+                    server_result_temp,
+                    client_result_temp,
+                    client_average_latency,
+                    str(test_thread),
+                    buffer_size,
+                    environment,
+                    inspect.stack()[1][3],
+                )
+            )
+
+        for ntttcp_message in perf_ntttcp_message_list:
+            notifier.notify(ntttcp_message)
 
     def _storage_perf_qemu(
         self,
