@@ -54,7 +54,9 @@ class Lscpu(Tool):
     __vcpu = re.compile(r"^CPU\(s\):[ ]+([\d]+)\r?$", re.M)
     __thread_per_core = re.compile(r"^Thread\(s\) per core:[ ]+([\d]+)\r?$", re.M)
     __core_per_socket = re.compile(r"^Core\(s\) per socket:[ ]+([\d]+)\r?$", re.M)
+    __core_per_cluster = re.compile(r"^Core\(s\) per cluster:[ ]+([\d]+)\r?$", re.M)
     __sockets = re.compile(r"^Socket\(s\):[ ]+([\d]+)\r?$", re.M)
+    __clusters = re.compile(r"^Cluster\(s\):[ ]+([\d]+)\r?$", re.M)
     # Architecture:        x86_64
     __architecture_pattern = re.compile(r"^Architecture:\s+(.*)?\r$", re.M)
     __valid_architecture_list = ["x86_64", "aarch64"]
@@ -96,6 +98,16 @@ class Lscpu(Tool):
         ).is_subset_of(self.__valid_architecture_list)
         return architecture
 
+    def check_cluster_exists(self, force_run: bool = False) -> bool:
+        # The concept of a "cluster" of CPUs was recently added in the Linux
+        # 5.16 kernel in commit c5e22feffdd7. There is "Core(s) per cluster"
+        # and "Cluster(s)" in the output of lscpu. The function returns True
+        # when having "Core(s) per cluster" key words in output of lscpu.
+        result = self.run(force_run=force_run)
+        if "Core(s) per cluster" in result.stdout:
+            return True
+        return False
+
     def get_core_count(self, force_run: bool = False) -> int:
         result = self.run(force_run=force_run)
         matched = self.__vcpu.findall(result.stdout)
@@ -127,12 +139,32 @@ class Lscpu(Tool):
 
         return int(matched[0]) * 1
 
+    def get_core_per_cluster_count(self, force_run: bool = False) -> int:
+        result = self.run(force_run=force_run)
+        matched = self.__core_per_cluster.findall(result.stdout)
+        assert_that(
+            len(matched),
+            f"core per cluster count should have exact one line, but got {matched}",
+        ).is_equal_to(1)
+
+        return int(matched[0]) * 1
+
     def get_socket_count(self, force_run: bool = False) -> int:
         result = self.run(force_run=force_run)
         matched = self.__sockets.findall(result.stdout)
         assert_that(
             len(matched),
             f"socket count should have exact one line, but got {matched}",
+        ).is_equal_to(1)
+
+        return int(matched[0]) * 1
+
+    def get_cluster_count(self, force_run: bool = False) -> int:
+        result = self.run(force_run=force_run)
+        matched = self.__clusters.findall(result.stdout)
+        assert_that(
+            len(matched),
+            f"cluster count should have exact one line, but got {matched}",
         ).is_equal_to(1)
 
         return int(matched[0]) * 1
