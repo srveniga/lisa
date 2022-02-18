@@ -171,6 +171,44 @@ class NetworkUDPPerformanceMessage(PerfMessage):
     packet_size_kbytes: Decimal = Decimal(0)
 
 
+@dataclass
+class CpsPerformanceMessage(PerfMessage):
+    min: Decimal = Decimal(0)
+    max: Decimal = Decimal(0)
+    med: Decimal = Decimal(0)
+    avg: Decimal = Decimal(0)
+    percentile_99_999: Decimal = Decimal(0)
+    percentile_99_99: Decimal = Decimal(0)
+    percentile_99_9: Decimal = Decimal(0)
+    percentile_99: Decimal = Decimal(0)
+    percentile_90: Decimal = Decimal(0)
+    percentile_75: Decimal = Decimal(0)
+    percentile_50: Decimal = Decimal(0)
+    percentile_25: Decimal = Decimal(0)
+    mad: Decimal = Decimal(0)
+    std_err: Decimal = Decimal(0)
+    lower_ci: Decimal = Decimal(0)
+    upper_ci: Decimal = Decimal(0)
+    ci_significance_level: int = 0
+    min_cpu: Decimal = Decimal(0)
+    max_cpu: Decimal = Decimal(0)
+    med_cpu: Decimal = Decimal(0)
+    avg_cpu: Decimal = Decimal(0)
+    duration_in_secs: Decimal = Decimal(0)
+    num_threads: int = 0
+    command: str = ""
+    accel_net: str = ""
+    # RunID: str = ""
+    # vm_name: str = ""
+    # vm_size: str = ""
+    # region: str = ""
+    # os_image: str = ""
+    # os_version: str = ""
+    # os_kernel: str = ""
+    # processor: str = ""
+    # cluster_name: str = ""
+
+
 def create_message(
     message_type: Type[T],
     node: "Node",
