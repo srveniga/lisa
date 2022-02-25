@@ -7,6 +7,8 @@ from lisa.base_tools import Cat, Sed, Uname, Wget
 from .blkid import Blkid
 from .chown import Chown
 from .chrony import Chrony
+from .cps import Cps
+from .cpu_usage import CpuUsage
 from .date import Date
 from .df import Df
 from .dhclient import Dhclient

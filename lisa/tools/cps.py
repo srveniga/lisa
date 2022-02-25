@@ -39,11 +39,8 @@ class CpsResult:
     lower_ci: Decimal = Decimal(0)
     upper_ci: Decimal = Decimal(0)
     ci_significance_level: Decimal = Decimal(0)
-    min_cpu: Decimal = Decimal(0)
-    max_cpu: Decimal = Decimal(0)
-    med_cpu: Decimal = Decimal(0)
-    avg_cpu: Decimal = Decimal(0)
-    duration_in_secs: Decimal = Decimal(0)
+    duration_in_secs: int = 0
+    warmup_time_in_secs: int = 0
     command: str = ""
     accel_net: str = ""
     num_threads: int = 0
@@ -51,8 +48,8 @@ class CpsResult:
 
 class Cps(Tool):
     def __init__(self, tool_remote_location: str) -> None:
-        self._server_result_file = Path("/tmp/cps_result.txt")
-        self._client_result_file = Path("/tmp/cps_result.txt")
+        self._result_file = Path("/tmp/cps_result.txt")
+        self._role = ""
         self._results_per_sec = []  # type: List[float]
         self._cps_result = CpsResult()
         self._tool_remote_location = tool_remote_location
@@ -78,9 +75,9 @@ class Cps(Tool):
             return True
         return False
 
-    def process_additional_stats_from_results(
-        self, significance_level: Decimal
-    ) -> None:
+    def process_additional_stats_from_results(self) -> None:
+        significance_level = self._cps_result.ci_significance_level
+
         self._cps_result.min = Decimal(min(self._results_per_sec))
         self._cps_result.max = Decimal(max(self._results_per_sec))
         self._cps_result.avg = Decimal(repr(numpy.average(self._results_per_sec)))
@@ -125,14 +122,12 @@ class Cps(Tool):
             repr(numpy.percentile(self._results_per_sec, 99.999))
         )
 
-    def process_result_file(
-        self, warmup_time_secs: int, significance_level: Decimal, result_file: Path
-    ) -> Tuple[CpsResult, int]:
+    def process_result_file(self, result_file: Path) -> Tuple[CpsResult, int]:
         assert result_file.exists()
 
         # cps reporting requires data samples during the
         # warmup period to be excluded from data set
-        exclude_count = warmup_time_secs
+        exclude_count = self._cps_result.warmup_time_in_secs
         append_result = True
         fd = open(result_file.absolute(), "r")
         lines = fd.readlines()
@@ -163,8 +158,10 @@ class Cps(Tool):
 
         fd.close()
 
-        # compute and collect the derived stats
-        self.process_additional_stats_from_results(significance_level)
+        # compute and collect the derived stats for server
+        if self._role == "server":
+            self.process_additional_stats_from_results()
+
         return self._cps_result, processed_results
 
     def process_server_output(self, cmd_result: ExecutableResult) -> CpsResult:
@@ -176,7 +173,9 @@ class Cps(Tool):
         warm_up_time_seconds: int = 30,
         num_threads: int = 16,
         server_port: int = 8001,
+        significance_level: Decimal = Decimal(99),
     ) -> Process:
+        self._role = "server"
         cmd = ""
         cmd += (
             f" -s -r {num_threads} 0.0.0.0,{server_port} -t {run_time_seconds}"
@@ -186,21 +185,23 @@ class Cps(Tool):
         process = self.node.execute_async(
             f"ulimit -n 1048575 && {self.command} {cmd}", shell=True, sudo=True
         )
+
+        self._cps_result.num_threads = num_threads
+        self._cps_result.warmup_time_in_secs = warm_up_time_seconds
+        self._cps_result.ci_significance_level = significance_level
+        self._cps_result.duration_in_secs = run_time_seconds - warm_up_time_seconds
+
         return process
 
     def wait_for_server_result(
         self,
-        warm_up_time_seconds: int,
-        significance_level: Decimal,
         server_process: Process,
     ) -> Tuple[CpsResult, int]:
         server_process.wait_result(
             expected_exit_code=0,
             expected_exit_code_failure_message="fail to launch cps server",
         )
-        server_cps_result, num_data_values = self.process_result_file(
-            warm_up_time_seconds, significance_level, self._server_result_file
-        )
+        server_cps_result, num_data_values = self.process_result_file(self._result_file)
         return server_cps_result, num_data_values
 
     def run_as_client_async(
@@ -218,6 +219,7 @@ class Cps(Tool):
         warm_up_time_seconds: int = 30,
         significance_level: Decimal = Decimal(99),
     ) -> Process:
+        self._role = "client"
         # -c: run as a client which establishes connections to
         #     specified remote addresses/ports
         # -r: repeat option for creating multiple with same params
@@ -243,12 +245,13 @@ class Cps(Tool):
         process = self.node.execute_async(
             f"ulimit -n 1048575 && {self.command} {cmd}", shell=True, sudo=True
         )
+        self._cps_result.warmup_time_in_secs = warm_up_time_seconds
+        self._cps_result.ci_significance_level = significance_level
+
         return process
 
     def wait_for_client_result(
         self,
-        warm_up_time_seconds: int,
-        significance_level: Decimal,
         client_process: Process,
     ) -> Tuple[CpsResult, int]:
         client_process.wait_result(
@@ -256,9 +259,7 @@ class Cps(Tool):
             expected_exit_code_failure_message="fail to launch cps client",
         )
 
-        client_cps_result, num_data_values = self.process_result_file(
-            warm_up_time_seconds, significance_level, self._client_result_file
-        )
+        client_cps_result, num_data_values = self.process_result_file(self._result_file)
         return client_cps_result, num_data_values
 
     def create_cps_performance_message(
@@ -287,10 +288,6 @@ class Cps(Tool):
         other_fields["lower_ci"] = server_result.lower_ci
         other_fields["upper_ci"] = server_result.upper_ci
         other_fields["ci_significance_level"] = server_result.ci_significance_level
-        other_fields["min_cpu"] = server_result.cycles_per_byte
-        other_fields["max_cpu"] = server_result.cycles_per_byte
-        other_fields["med_cpu"] = server_result.cycles_per_byte
-        other_fields["avg_cpu"] = server_result.cycles_per_byte
         other_fields["duration_in_secs"] = server_result.duration_in_secs
         other_fields["num_threads"] = server_result.num_threads
         other_fields["command"] = client_result.command
@@ -305,6 +302,16 @@ class Cps(Tool):
     def _initialize(self, *args: Any, **kwargs: Any) -> None:
         firewall = self.node.tools[Firewall]
         firewall.stop()
+
+        # Record accelnet status - need to do it just once for the VM
+        lspci_tool = self.node.tools[Lspci]
+        device_list = lspci_tool.get_device_list_per_device_type(
+            constants.DEVICE_TYPE_SRIOV
+        )
+        if len(device_list) > 0:
+            self._cps_result.accel_net = "ON"
+        else:
+            self._cps_result.accel_net = "OFF"
 
     def _install(self) -> bool:
         # copy the binary from the location to home folder

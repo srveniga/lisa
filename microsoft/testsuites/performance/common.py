@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 from lisa import Node, RemoteNode, notifier, run_in_parallel
 from lisa.environment import Environment
 from lisa.messages import (
+    CpsPerformanceMessage,
     DiskPerformanceMessage,
     DiskSetupType,
     DiskType,
@@ -17,6 +18,8 @@ from lisa.messages import (
 from lisa.schema import NetworkDataPath
 from lisa.tools import (
     FIOMODES,
+    Cps,
+    CpuUsage,
     Fdisk,
     Fio,
     FIOResult,
@@ -213,10 +216,7 @@ def perf_ntttcp(
         client_lagscope, server_lagscope = run_in_parallel(
             [lambda: client.tools[Lagscope], lambda: server.tools[Lagscope]]
         )
-        for ntttcp in [client_ntttcp, server_ntttcp]:
-            ntttcp.setup_system(udp_mode)
-        for lagscope in [client_lagscope, server_lagscope]:
-            lagscope.set_busy_poll()
+
         data_path = get_nic_datapath(client)
         server_nic_name = server.nics.default_nic
         client_nic_name = client.nics.default_nic
@@ -408,3 +408,73 @@ def calculate_middle_average(values: List[Union[float, int]]) -> float:
     total = sum(x for x in values) - min(values) - max(values)
     # calculate average
     return total / (len(values) - 2)
+
+
+def perf_cps(
+    environment: Environment,
+    num_threads: int = 16,
+    test_case_name: str = "",
+) -> List[CpsPerformanceMessage]:
+    client = cast(RemoteNode, environment.nodes[0])
+    server = cast(RemoteNode, environment.nodes[1])
+    if not test_case_name:
+        # if it's not filled, assume it's called by case directly.
+        test_case_name = inspect.stack()[1][3]
+
+    client_cps = client.tools[Cps]
+    server_cps = server.tools[Cps]
+    server_cpu = server.tools[CpuUsage]
+    run_in_parallel(
+        [lambda: client_cps.initialize("TODO"), lambda: server_cps.initialize("TODO")]
+    )
+
+    duration_secs = 330
+    warmup_time_secs = 30
+    server_process = server_cps.run_as_server_async(
+        run_time_seconds=duration_secs,
+        warm_up_time_seconds=warmup_time_secs,
+        num_threads=num_threads,
+        server_port=8001,
+    )
+    client_process = client_cps.run_as_client_async(
+        local_ip="0.0.0.0",
+        local_port=0,
+        server_ip=server.internal_address,
+        server_port=8001,
+        threads_count=num_threads,
+        num_conns_per_thread=100,
+        max_pending_connects_per_thread=100,
+        run_time_seconds=duration_secs,
+        warm_up_time_seconds=warmup_time_secs,
+    )
+    if server_cpu.measure_cpu(duration_secs - 1):
+        server_cpu_stats = server_cpu.get_stats()
+    else:
+        pass  # TODO: log the error
+
+    client_result, client_num_observations = client_cps.wait_for_client_result(
+        client_process
+    )
+    server_result, server_num_observations = server_cps.wait_for_server_result(
+        server_process
+    )
+
+    # TODO: what to do when num_observations is < expected?
+    cps_performance_msg = server_cps.create_cps_performance_message(
+        server_result=server_result,
+        client_result=client_result,
+        environment=environment,
+        test_case_name=test_case_name,
+    )
+
+    # Add the server CPU utilization
+    cps_performance_msg.avg_cpu = server_cpu_stats.avg_system_cpu
+    cps_performance_msg.min_cpu = server_cpu_stats.min_system_cpu
+    cps_performance_msg.max_cpu = server_cpu_stats.max_system_cpu
+    cps_performance_msg.med_cpu = server_cpu_stats.med_system_cpu
+
+    notifier.notify(cps_performance_msg)
+    perf_cps_message_list: List[CpsPerformanceMessage] = []
+    perf_cps_message_list.append(cps_performance_msg)
+
+    return perf_cps_message_list
